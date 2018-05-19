@@ -1,67 +1,156 @@
 import React, { Component } from 'react';
+import math from 'mathjs';
 import './Svg.css';
+import {
+  angleBetween,
+  isHit,
+  matrixToSvgTransform,
+} from './graphicsUtils';
 
 const VIEW_BOX_WIDTH = 100;
 const VIEW_BOX_HEIGHT = 100;
+const RECT_WIDTH = 10;
+const RECT_HEIGHT = 10;
 
 class Svg extends Component {
   constructor(props) {
     super(props);
 
     this.svg = React.createRef();
+    this.rect = React.createRef();
+    this.circle = React.createRef();
 
     this.state = {
       draggingOffset: null,
-      transform: [1, 0, 0, 1, 0, 0],
+      // Point where dragging the rotate handle started
+      rotateHandleDragPoint: null,
+      transform: math.matrix([
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+      ]),
     };
   }
 
-  browserCoordsToViewBox(browserPoint) {
-    const svgRect = this.svg.current.getBoundingClientRect();
+  static browserToViewBoxRect(rect, container) {
+    const point = Svg.browserCoordsToViewBox({
+      x: rect.x,
+      y: rect.y,
+    }, container);
+    const dimensions = Svg.browserCoordsToViewBox({
+      x: rect.width,
+      y: rect.height,
+    }, container);
+
     return {
-      x: VIEW_BOX_WIDTH * browserPoint.x / svgRect.width,
-      y: VIEW_BOX_HEIGHT * browserPoint.y / svgRect.height,
+      x: point.x,
+      y: point.y,
+      width: dimensions.x,
+      height: dimensions.y,
+    };
+  }
+
+  static browserCoordsToViewBox(browserPoint, container) {
+    return {
+      x: VIEW_BOX_WIDTH * browserPoint.x / container.width,
+      y: VIEW_BOX_HEIGHT * browserPoint.y / container.height,
     };
   }
 
   onMouseDown(event) {
-    const viewBoxPoint = this.browserCoordsToViewBox({
+    const container = this.svg.current.getBoundingClientRect();
+    const viewBoxRect = Svg.browserToViewBoxRect(
+      this.rect.current.getBoundingClientRect(),
+      container,
+    );
+    const viewBoxPoint = Svg.browserCoordsToViewBox({
       x: event.clientX,
       y: event.clientY,
-    });
-    this.setState({
-      draggingOffset: {
-        x: this.state.transform[4] - viewBoxPoint.x,
-        y: this.state.transform[5] - viewBoxPoint.y,
-      },
-    });
-  }
+    }, container);
 
-  onMouseMove(event) {
-    if (!this.state.draggingOffset) {
+    // If click happened on the rect
+    if (isHit(viewBoxRect, viewBoxPoint)) {
+      this.setState({
+        draggingOffset: {
+          x: this.state.transform._data[0][2] - viewBoxPoint.x,
+          y: this.state.transform._data[1][2] - viewBoxPoint.y,
+        },
+      });
       return;
     }
 
-    const viewBoxPoint = this.browserCoordsToViewBox({
+    // If click happened on the rotate handle
+    const viewBoxRotateHandle = Svg.browserToViewBoxRect(
+      this.circle.current.getBoundingClientRect(),
+      container,
+    );
+    if (isHit(viewBoxRotateHandle, viewBoxPoint)) {
+      this.setState({
+        rotateHandleDragPoint: {
+          x: viewBoxRect.x + RECT_WIDTH / 2,
+          y: viewBoxRect.y + RECT_HEIGHT / 2,
+        },
+      });
+    }
+  }
+
+  onMouseMove(event) {
+    if (!this.state.draggingOffset && !this.state.rotateHandleDragPoint) {
+      return;
+    }
+
+    let transformationMatrix = math.matrix([
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ]);
+
+    // Calculate viewbox coords of event
+    const container = this.svg.current.getBoundingClientRect();
+    const viewBoxPoint = Svg.browserCoordsToViewBox({
       x: event.clientX,
       y: event.clientY,
-    });
-    const viewBoxPointAdjusted = {
-      x: viewBoxPoint.x + this.state.draggingOffset.x,
-      y: viewBoxPoint.y + this.state.draggingOffset.y,
-    };
+    }, container);
+
+    // Calculate translate
+    if (this.state.draggingOffset) {
+      transformationMatrix._data[0][2] = viewBoxPoint.x + this.state.draggingOffset.x;
+      transformationMatrix._data[1][2] = viewBoxPoint.y + this.state.draggingOffset.y;
+    } else {
+      transformationMatrix._data[0][2] = this.state.transform._data[0][2];
+      transformationMatrix._data[1][2] = this.state.transform._data[1][2];
+    }
+
+    // Calculate rotation
+    if (this.state.rotateHandleDragPoint) {
+      const angle = angleBetween(this.state.rotateHandleDragPoint, viewBoxPoint);
+      const rotationMatrix = math.matrix([
+        [Math.cos(angle), -Math.sin(angle), 0],
+        [Math.sin(angle), Math.cos(angle), 0],
+        [0, 0, 1],
+      ]);
+      transformationMatrix = math.multiply(transformationMatrix, rotationMatrix);
+    } else {
+      transformationMatrix._data[0][0] = this.state.transform._data[0][0];
+      transformationMatrix._data[0][1] = this.state.transform._data[0][1];
+      transformationMatrix._data[1][0] = this.state.transform._data[1][0];
+      transformationMatrix._data[1][1] = this.state.transform._data[1][1];
+    }
+
     this.setState({
-      transform: [1, 0, 0, 1, viewBoxPointAdjusted.x, viewBoxPointAdjusted.y],
+      transform: transformationMatrix,
     });
   }
 
   onMouseUp() {
     this.setState({
       draggingOffset: null,
+      rotateHandleDragPoint: null,
     });
   }
 
   render() {
+    const transformString = matrixToSvgTransform(this.state.transform);
     return (
       <svg
         viewBox={`0 0 ${VIEW_BOX_WIDTH} ${VIEW_BOX_HEIGHT}`}
@@ -70,11 +159,21 @@ class Svg extends Component {
         onMouseUp={(event) => this.onMouseUp(event)}
         ref={this.svg}
       >
-        <rect
-          width="10"
-          height="10"
-          transform={`matrix(${this.state.transform.join(' ')})`}
-        />
+        <g
+          transform={`matrix(${transformString})`}
+        >
+          <rect
+            width={RECT_WIDTH}
+            height={RECT_HEIGHT}
+            ref={this.rect}
+          />
+          <circle
+            r="1"
+            cx="11"
+            cy="5"
+            ref={this.circle}
+          />
+        </g>
       </svg>
     );
   }

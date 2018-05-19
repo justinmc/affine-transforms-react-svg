@@ -5,5 +5,9 @@ svg {
 }
 
 rect {
-  background-color: #ff0000;
+  fill: #ff0000;
+}
+
+circle {
+  fill: #0000ff;
 }
