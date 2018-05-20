@@ -4,8 +4,12 @@ svg {
   background-color: #dfdfdf;
 }
 
-rect {
+.rect {
   fill: #ff0000;
+}
+
+.scale-handle {
+  fill: #000000;
 }
 
 circle {
