@@ -3,14 +3,25 @@ import math from 'mathjs';
 import './Svg.css';
 import {
   angleBetween,
+  applyMatrixToPoint,
+  getBoundingBox,
   isHit,
   matrixToSvgTransform,
 } from './graphicsUtils';
 
 const VIEW_BOX_WIDTH = 100;
 const VIEW_BOX_HEIGHT = 100;
-const RECT_WIDTH = 10;
-const RECT_HEIGHT = 10;
+const HANDLE_SIZE = 1;
+const INITIAL_RECT = {
+  x: 0,
+  y: 0,
+  width: 10,
+  height: 10,
+};
+const INITIAL_ROTATION_HANDLE_POINT = {
+  x: INITIAL_RECT.width,
+  y: INITIAL_RECT.height / 2,
+};
 
 class Svg extends Component {
   constructor(props) {
@@ -18,14 +29,12 @@ class Svg extends Component {
 
     this.svg = React.createRef();
     this.rect = React.createRef();
-    this.rotationHandle = React.createRef();
     this.scaleHandle = React.createRef();
 
     this.state = {
       draggingOffset: null,
-      // Point where dragging the rotate handle started
-      rotateHandleDragPoint: null,
-      scaleHandleDragPoint: null,
+      rotationHandleDragPoint: null, // Point to measure rotation from during drag
+      scaleHandleDragPoint: null, // Point to measure scaling from during drag
       scale: {
         x: 1,
         y: 1,
@@ -34,6 +43,10 @@ class Svg extends Component {
       translation: {
         x: 0,
         y: 0,
+      },
+      scaleHandlePoint: {
+        x: 9,
+        y: 9,
       },
     };
   }
@@ -56,6 +69,9 @@ class Svg extends Component {
     };
   }
 
+  /**
+   * Convert from raw browser coordinates to SVG viewbox coordinates/
+   */
   static browserCoordsToViewBox(browserPoint, container) {
     return {
       x: VIEW_BOX_WIDTH * browserPoint.x / container.width,
@@ -63,6 +79,9 @@ class Svg extends Component {
     };
   }
 
+  /**
+   * Identify mousedowns on handles and save relevant data
+   */
   onMouseDown(event) {
     const container = this.svg.current.getBoundingClientRect();
     const viewBoxRect = Svg.browserToViewBoxRect(
@@ -74,7 +93,7 @@ class Svg extends Component {
       y: event.clientY,
     }, container);
 
-    // If click happened on scale handle
+    // If on scale handle
     const viewBoxScaleHandle = Svg.browserToViewBoxRect(
       this.scaleHandle.current.getBoundingClientRect(),
       container,
@@ -89,6 +108,31 @@ class Svg extends Component {
       return;
     }
 
+    // If on the rotate handle
+    const rotationHandlePoint = applyMatrixToPoint(
+      INITIAL_ROTATION_HANDLE_POINT,
+      this.getTransformationMatrix(),
+    );
+    const viewBoxRotateHandle = {
+      x: rotationHandlePoint.x,
+      y: rotationHandlePoint.y,
+      width: HANDLE_SIZE,
+      height: HANDLE_SIZE,
+    };
+    if (isHit(viewBoxRotateHandle, viewBoxPoint)) {
+      const centerPoint = applyMatrixToPoint(
+        {
+          x: INITIAL_RECT.width / 2,
+          y: INITIAL_RECT.height / 2,
+        },
+        this.getTransformationMatrix(),
+      );
+      this.setState({
+        rotationHandleDragPoint: centerPoint,
+      });
+      return;
+    }
+
     // If click happened on the rect
     if (isHit(viewBoxRect, viewBoxPoint)) {
       this.setState({
@@ -99,33 +143,15 @@ class Svg extends Component {
       });
       return;
     }
-
-    // If click happened on the rotate handle
-    const viewBoxRotateHandle = Svg.browserToViewBoxRect(
-      this.rotationHandle.current.getBoundingClientRect(),
-      container,
-    );
-    if (isHit(viewBoxRotateHandle, viewBoxPoint)) {
-      this.setState({
-        rotateHandleDragPoint: {
-          x: viewBoxRect.x + RECT_WIDTH / 2,
-          y: viewBoxRect.y + RECT_HEIGHT / 2,
-        },
-      });
-      return;
-    }
   }
 
+  /**
+   * Update transforms when dragging
+   */
   onMouseMove(event) {
-    if (!this.state.draggingOffset && !this.state.rotateHandleDragPoint && !this.state.scaleHandleDragPoint) {
+    if (!this.state.draggingOffset && !this.state.rotationHandleDragPoint && !this.state.scaleHandleDragPoint) {
       return;
     }
-
-    let transformationMatrix = math.matrix([
-      [1, 0, 0],
-      [0, 1, 0],
-      [0, 0, 1],
-    ]);
 
     // Calculate viewbox coords of event
     const container = this.svg.current.getBoundingClientRect();
@@ -145,8 +171,8 @@ class Svg extends Component {
     }
 
     // Calculate rotation
-    if (this.state.rotateHandleDragPoint) {
-      const angle = angleBetween(this.state.rotateHandleDragPoint, viewBoxPoint);
+    if (this.state.rotationHandleDragPoint) {
+      const angle = angleBetween(this.state.rotationHandleDragPoint, viewBoxPoint);
       this.setState({
         rotation: angle,
       });
@@ -155,9 +181,12 @@ class Svg extends Component {
     // Calculate scale
     if (this.state.scaleHandleDragPoint) {
       this.setState({
+        scaleHandleDragPoint: viewBoxPoint,
         scale: {
-          x: 1 + (viewBoxPoint.x - this.state.scaleHandleDragPoint.x) / RECT_WIDTH,
-          y: 1 + (viewBoxPoint.y - this.state.scaleHandleDragPoint.y) / RECT_HEIGHT,
+          // TODO this is wrong
+          // Option 1: un-transform clicked point, but keep translation
+          x: this.state.scale.x + (viewBoxPoint.x - this.state.scaleHandleDragPoint.x) / INITIAL_RECT.width,
+          y: this.state.scale.y + (viewBoxPoint.y - this.state.scaleHandleDragPoint.y) / INITIAL_RECT.height,
         },
       });
     }
@@ -166,12 +195,18 @@ class Svg extends Component {
   onMouseUp() {
     this.setState({
       draggingOffset: null,
-      rotateHandleDragPoint: null,
+      rotationHandleDragPoint: null,
       scaleHandleDragPoint: null,
     });
   }
 
-  render() {
+  /**
+   * Using the translation, scale, and rotation props, create a combined
+   * matrix representing an overall transform.
+   * @returns {Matrix}
+   */
+  getTransformationMatrix() {
+    // http://roccobalsamo.com/gfx/matrix.html
     const translationMatrix = math.matrix([
       [1, 0, this.state.translation.x],
       [0, 1, this.state.translation.y],
@@ -183,6 +218,14 @@ class Svg extends Component {
       [0, 0, 1],
     ]);
 
+    // Width and height of bounding box after scale
+    const { width, height } = getBoundingBox(
+      INITIAL_RECT,
+      scaleMatrix,
+    );
+
+    // To rotate about the center, must be translated to the origin, rotated,
+    // and then translated back.
     const { rotation } = this.state;
     const rawRotationMatrix = math.matrix([
       [Math.cos(rotation), -Math.sin(rotation),  0],
@@ -190,13 +233,13 @@ class Svg extends Component {
       [0, 0, 1],
     ]);
     const centerToOriginMatrix = math.matrix([
-      [1, 0,  -RECT_WIDTH / 2],
-      [0, 1, -RECT_HEIGHT / 2],
+      [1, 0,  -width / 2],
+      [0, 1, -height / 2],
       [0, 0, 1],
     ]);
     const centerToOriginInverseMatrix = math.matrix([
-      [1, 0,  RECT_WIDTH / 2],
-      [0, 1, RECT_HEIGHT / 2],
+      [1, 0,  width / 2],
+      [0, 1, height / 2],
       [0, 0, 1],
     ]);
     const rotationMatrix = math.multiply(
@@ -205,12 +248,28 @@ class Svg extends Component {
       centerToOriginMatrix,
     );
 
-    const transformationMatrix = math.multiply(
+    return math.multiply(
       translationMatrix,
-      scaleMatrix,
       rotationMatrix,
+      scaleMatrix,
     );
+  }
+
+  render() {
+    const transformationMatrix = this.getTransformationMatrix();
     const transform = matrixToSvgTransform(transformationMatrix);
+
+    // Apply transformation on rotation handle point
+    // (Not on the actual SVG element, because don't want to scale the shape)
+    const rotationHandlePoint = applyMatrixToPoint(
+      INITIAL_ROTATION_HANDLE_POINT,
+      transformationMatrix,
+    );
+
+    const boundingBox = getBoundingBox(
+      INITIAL_RECT,
+      transformationMatrix,
+    );
 
     return (
       <svg
@@ -220,30 +279,27 @@ class Svg extends Component {
         onMouseUp={(event) => this.onMouseUp(event)}
         ref={this.svg}
       >
-        <g
+        <rect
+          className="rect"
+          width={INITIAL_RECT.width}
+          height={INITIAL_RECT.height}
           transform={`matrix(${transform})`}
-        >
-          <rect
-            className="rect"
-            width={RECT_WIDTH}
-            height={RECT_HEIGHT}
-            ref={this.rect}
-          />
-          <rect
-            className="scale-handle"
-            width="1"
-            height="1"
-            x="9"
-            y="9"
-            ref={this.scaleHandle}
-          />
-          <circle
-            r="0.5"
-            cx="10.5"
-            cy="5"
-            ref={this.rotationHandle}
-          />
-        </g>
+          ref={this.rect}
+        />
+        <rect
+          className="scale-handle"
+          width={HANDLE_SIZE}
+          height={HANDLE_SIZE}
+          x={boundingBox.x + boundingBox.width}
+          y={boundingBox.y + boundingBox.height}
+          ref={this.scaleHandle}
+        />
+        <circle
+          className="rotation-handle"
+          r={HANDLE_SIZE / 2}
+          cx={rotationHandlePoint.x}
+          cy={rotationHandlePoint.y}
+        />
       </svg>
     );
   }
