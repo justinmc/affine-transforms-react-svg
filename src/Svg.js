@@ -1,5 +1,4 @@
 import React, { Component } from 'react';
-import math from 'mathjs';
 import './Svg.css';
 import {
   angleBetween,
