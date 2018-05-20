@@ -2,6 +2,7 @@
   "name": "svg-transform",
   "version": "0.1.0",
   "private": true,
+  "homepage": "https://justinmc.github.io/affine-transforms-react-svg/",
   "dependencies": {
     "mathjs": "^4.2.2",
     "react": "^16.3.2",
